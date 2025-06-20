@@ -1,107 +1,117 @@
-
 import os
 import csv
+import json
 import time
 import requests
 
-API_KEY = os.getenv("PSI_API_KEY")
-STRATEGIES = ["mobile", "desktop"]
-RETRY_COUNT = 3
-DELAY_SECONDS = 5
+API_KEY = os.getenv('PSI_API_KEY')
 
-INPUT_FILES = [
-    "urls_part_1.txt",
-    "urls_part_2.txt",
+STRATEGIES = ['mobile', 'desktop']
+URL_BATCHES = ['urls_part_1.txt', 'urls_part_2.txt']  # Add more as needed
+
+OUTPUT_DIR = 'psi_results'
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+
+FIELD_NAMES = [
+    "URL", "Strategy", "Performance", "LCP", "FID", "CLS", "INP",
+    "Field LCP", "Field FID", "Field CLS", "Field INP", "CWV Status", "Status"
 ]
 
-OUTPUT_FILE = "psi_results_batch_1.csv"
-
 def fetch_psi_data(url, strategy):
-    endpoint = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
+    endpoint = 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed'
     params = {
-        "url": url,
-        "strategy": strategy,
-        "key": API_KEY,
+        'url': url,
+        'strategy': strategy,
+        'key': API_KEY,
+        'category': 'performance'
     }
-
-    for attempt in range(RETRY_COUNT):
-        try:
-            response = requests.get(endpoint, params=params, timeout=30)
-            if response.status_code == 200:
-                return response.json()
-            print(f"⚠️ Failed [{url}] [{strategy}] - HTTP {response.status_code}")
-        except requests.exceptions.RequestException as e:
-            print(f"🔁 Retry {attempt+1}/{RETRY_COUNT} [{url}] [{strategy}] - {e}")
-        time.sleep(DELAY_SECONDS)
-    return None
-
-def parse_crux_percentile(value):
-    return round(value / 1000, 2) if isinstance(value, (int, float)) else ""
-
-def needs_improvement(lcp, cls, inp):
     try:
-        return (
-            float(lcp) > 2.5 or
-            float(cls) > 0.1 or
-            float(inp) > 200
-        )
-    except:
-        return False
-
-def extract_metrics(data, url, strategy):
-    lh = data.get("lighthouseResult", {})
-    audits = lh.get("audits", {})
-    categories = lh.get("categories", {})
-    crux = data.get("loadingExperience", {}).get("metrics", {})
-    overall_status = data.get("loadingExperience", {}).get("overall_category", "N/A")
-
-    lcp_p75 = parse_crux_percentile(crux.get("LARGEST_CONTENTFUL_PAINT_MS", {}).get("percentile", ""))
-    cls_p75 = crux.get("CUMULATIVE_LAYOUT_SHIFT_SCORE", {}).get("percentile", "")
-    inp_p75 = parse_crux_percentile(crux.get("INTERACTION_TO_NEXT_PAINT_MS", {}).get("percentile", ""))
-
-    improvement = needs_improvement(lcp_p75, cls_p75, inp_p75)
-
-    return {
-        "URL": url,
-        "Strategy": strategy,
-        "Performance Score": categories.get("performance", {}).get("score", 0) * 100,
-        "FCP": audits.get("first-contentful-paint", {}).get("displayValue", ""),
-        "LCP": audits.get("largest-contentful-paint", {}).get("displayValue", ""),
-        "CLS": audits.get("cumulative-layout-shift", {}).get("displayValue", ""),
-        "INP": audits.get("interactive", {}).get("displayValue", ""),
-        "CrUX LCP (p75)": lcp_p75,
-        "CrUX CLS (p75)": cls_p75,
-        "CrUX INP (p75)": inp_p75,
-        "Core Web Vitals Status": overall_status,
-        "Needs Improvement": "✅ Yes" if improvement else "—"
-    }
-
-def run_scan():
-    all_urls = []
-    for file in INPUT_FILES:
-        if os.path.exists(file):
-            with open(file, "r") as f:
-                all_urls += [line.strip() for line in f if line.strip()]
+        response = requests.get(endpoint, params=params, timeout=60)
+        if response.status_code == 200:
+            return response.json()
         else:
-            print(f"⚠️ File not found: {file}")
+            print(f"Failed to fetch data for {url} [{strategy}] - Status code: {response.status_code}")
+            return {"error": response.status_code}
+    except Exception as e:
+        print(f"Exception for {url} [{strategy}]: {e}")
+        return {"error": str(e)}
 
-    with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as csvfile:
-        fieldnames = [
-            "URL", "Strategy", "Performance Score", "FCP", "LCP", "CLS", "INP",
-            "CrUX LCP (p75)", "CrUX CLS (p75)", "CrUX INP (p75)",
-            "Core Web Vitals Status", "Needs Improvement"
-        ]
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
+def extract_data(url, strategy, data):
+    try:
+        lighthouse = data.get("lighthouseResult", {})
+        audits = lighthouse.get("audits", {})
+        loading_exp = data.get("loadingExperience", {}).get("metrics", {})
+        origin_exp = data.get("originLoadingExperience", {}).get("metrics", {})
+        cwv_status = data.get("loadingExperience", {}).get("overall_category", "N/A")
 
-        for url in all_urls:
+        return {
+            "URL": url,
+            "Strategy": strategy,
+            "Performance": lighthouse.get("categories", {}).get("performance", {}).get("score", "N/A") * 100 if lighthouse.get("categories", {}).get("performance") else "N/A",
+            "LCP": audits.get("largest-contentful-paint", {}).get("displayValue", "N/A"),
+            "FID": audits.get("max-potential-fid", {}).get("displayValue", "N/A"),
+            "CLS": audits.get("cumulative-layout-shift", {}).get("displayValue", "N/A"),
+            "INP": audits.get("interactive", {}).get("displayValue", "N/A"),
+            "Field LCP": loading_exp.get("LARGEST_CONTENTFUL_PAINT_MS", {}).get("percentile", origin_exp.get("LARGEST_CONTENTFUL_PAINT_MS", {}).get("percentile", "N/A")),
+            "Field FID": loading_exp.get("FIRST_INPUT_DELAY_MS", {}).get("percentile", origin_exp.get("FIRST_INPUT_DELAY_MS", {}).get("percentile", "N/A")),
+            "Field CLS": loading_exp.get("CUMULATIVE_LAYOUT_SHIFT_SCORE", {}).get("percentile", origin_exp.get("CUMULATIVE_LAYOUT_SHIFT_SCORE", {}).get("percentile", "N/A")),
+            "Field INP": loading_exp.get("EXPERIMENTAL_INTERACTION_TO_NEXT_PAINT", {}).get("percentile", origin_exp.get("EXPERIMENTAL_INTERACTION_TO_NEXT_PAINT", {}).get("percentile", "N/A")),
+            "CWV Status": cwv_status,
+            "Status": "Success"
+        }
+    except Exception as e:
+        print(f"Error parsing data for {url} [{strategy}]: {e}")
+        return {
+            "URL": url,
+            "Strategy": strategy,
+            "Performance": "Error",
+            "LCP": "",
+            "FID": "",
+            "CLS": "",
+            "INP": "",
+            "Field LCP": "",
+            "Field FID": "",
+            "Field CLS": "",
+            "Field INP": "",
+            "CWV Status": "",
+            "Status": f"Error: {e}"
+        }
+
+def run_batch_scan(filename):
+    results = []
+    with open(filename, 'r') as file:
+        urls = [line.strip() for line in file if line.strip()]
+        for url in urls:
             for strategy in STRATEGIES:
-                print(f"🔍 Scanning {url} [{strategy}]")
                 data = fetch_psi_data(url, strategy)
-                if data:
-                    row = extract_metrics(data, url, strategy)
-                    writer.writerow(row)
-                time.sleep(DELAY_SECONDS)
+                if "error" not in data:
+                    result = extract_data(url, strategy, data)
+                else:
+                    result = {
+                        "URL": url,
+                        "Strategy": strategy,
+                        "Performance": "",
+                        "LCP": "",
+                        "FID": "",
+                        "CLS": "",
+                        "INP": "",
+                        "Field LCP": "",
+                        "Field FID": "",
+                        "Field CLS": "",
+                        "Field INP": "",
+                        "CWV Status": "",
+                        "Status": f"Failed ({data['error']})"
+                    }
+                results.append(result)
+                time.sleep(1)  # to avoid rate limiting
 
-if __name__ == "__main__":
-    run_scan()
+    out_csv = os.path.join(OUTPUT_DIR, f"psi_results_{filename.replace('.txt','')}.csv")
+    with open(out_csv, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=FIELD_NAMES)
+        writer.writeheader()
+        writer.writerows(results)
+
+if __name__ == '__main__':
+    for batch_file in URL_BATCHES:
+        run_batch_scan(batch_file)
