@@ -1,117 +1,78 @@
-import os
-import csv
-import json
-import time
+# psi-scan.py (Updated)
+
 import requests
+import csv
+import os
+import time
 
-API_KEY = os.getenv('PSI_API_KEY')
+API_KEY = os.getenv("PSI_API_KEY")
 
-STRATEGIES = ['mobile', 'desktop']
-URL_BATCHES = ['urls_part_1.txt', 'urls_part_2.txt']  # Add more as needed
+STRATEGIES = ["mobile", "desktop"]
+URL_FILES = ["urls_part_1.txt", "urls_part_2.txt"]
 
-OUTPUT_DIR = 'psi_results'
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-
-FIELD_NAMES = [
-    "URL", "Strategy", "Performance", "LCP", "FID", "CLS", "INP",
-    "Field LCP", "Field FID", "Field CLS", "Field INP", "CWV Status", "Status"
-]
-
+# Extract PSI Data
 def fetch_psi_data(url, strategy):
-    endpoint = 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed'
+    endpoint = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed"
     params = {
-        'url': url,
-        'strategy': strategy,
-        'key': API_KEY,
-        'category': 'performance'
+        "url": url,
+        "strategy": strategy,
+        "key": API_KEY,
+        "category": ["performance", "accessibility", "best-practices", "seo"]
     }
     try:
         response = requests.get(endpoint, params=params, timeout=60)
-        if response.status_code == 200:
-            return response.json()
-        else:
+        if response.status_code != 200:
             print(f"Failed to fetch data for {url} [{strategy}] - Status code: {response.status_code}")
-            return {"error": response.status_code}
-    except Exception as e:
-        print(f"Exception for {url} [{strategy}]: {e}")
-        return {"error": str(e)}
+            return {"url": url, "strategy": strategy, "error_code": response.status_code}
+        return parse_psi_data(response.json(), url, strategy)
+    except requests.exceptions.RequestException as e:
+        print(f"Request failed for {url} [{strategy}]: {e}")
+        return {"url": url, "strategy": strategy, "error": str(e)}
 
-def extract_data(url, strategy, data):
-    try:
-        lighthouse = data.get("lighthouseResult", {})
-        audits = lighthouse.get("audits", {})
-        loading_exp = data.get("loadingExperience", {}).get("metrics", {})
-        origin_exp = data.get("originLoadingExperience", {}).get("metrics", {})
-        cwv_status = data.get("loadingExperience", {}).get("overall_category", "N/A")
+# Extract Relevant Fields from PSI + CrUX
 
-        return {
-            "URL": url,
-            "Strategy": strategy,
-            "Performance": lighthouse.get("categories", {}).get("performance", {}).get("score", "N/A") * 100 if lighthouse.get("categories", {}).get("performance") else "N/A",
-            "LCP": audits.get("largest-contentful-paint", {}).get("displayValue", "N/A"),
-            "FID": audits.get("max-potential-fid", {}).get("displayValue", "N/A"),
-            "CLS": audits.get("cumulative-layout-shift", {}).get("displayValue", "N/A"),
-            "INP": audits.get("interactive", {}).get("displayValue", "N/A"),
-            "Field LCP": loading_exp.get("LARGEST_CONTENTFUL_PAINT_MS", {}).get("percentile", origin_exp.get("LARGEST_CONTENTFUL_PAINT_MS", {}).get("percentile", "N/A")),
-            "Field FID": loading_exp.get("FIRST_INPUT_DELAY_MS", {}).get("percentile", origin_exp.get("FIRST_INPUT_DELAY_MS", {}).get("percentile", "N/A")),
-            "Field CLS": loading_exp.get("CUMULATIVE_LAYOUT_SHIFT_SCORE", {}).get("percentile", origin_exp.get("CUMULATIVE_LAYOUT_SHIFT_SCORE", {}).get("percentile", "N/A")),
-            "Field INP": loading_exp.get("EXPERIMENTAL_INTERACTION_TO_NEXT_PAINT", {}).get("percentile", origin_exp.get("EXPERIMENTAL_INTERACTION_TO_NEXT_PAINT", {}).get("percentile", "N/A")),
-            "CWV Status": cwv_status,
-            "Status": "Success"
-        }
-    except Exception as e:
-        print(f"Error parsing data for {url} [{strategy}]: {e}")
-        return {
-            "URL": url,
-            "Strategy": strategy,
-            "Performance": "Error",
-            "LCP": "",
-            "FID": "",
-            "CLS": "",
-            "INP": "",
-            "Field LCP": "",
-            "Field FID": "",
-            "Field CLS": "",
-            "Field INP": "",
-            "CWV Status": "",
-            "Status": f"Error: {e}"
-        }
+def parse_psi_data(data, url, strategy):
+    result = {
+        "url": url,
+        "strategy": strategy,
+        "cwv_status": data.get("loadingExperience", {}).get("overall_category", "N/A"),
+        "performance_score": data.get("lighthouseResult", {}).get("categories", {}).get("performance", {}).get("score", 0) * 100,
+        "lcp": data.get("lighthouseResult", {}).get("audits", {}).get("largest-contentful-paint", {}).get("displayValue", "N/A"),
+        "cls": data.get("lighthouseResult", {}).get("audits", {}).get("cumulative-layout-shift", {}).get("displayValue", "N/A"),
+        "tti": data.get("lighthouseResult", {}).get("audits", {}).get("interactive", {}).get("displayValue", "N/A"),
+        "fcp": data.get("lighthouseResult", {}).get("audits", {}).get("first-contentful-paint", {}).get("displayValue", "N/A"),
+        "tbt": data.get("lighthouseResult", {}).get("audits", {}).get("total-blocking-time", {}).get("displayValue", "N/A")
+    }
+    return result
 
-def run_batch_scan(filename):
-    results = []
-    with open(filename, 'r') as file:
-        urls = [line.strip() for line in file if line.strip()]
+# Main Loop
+
+def run_scan():
+    for file in URL_FILES:
+        if not os.path.exists(file):
+            print(f"❌ File not found: {file}")
+            continue
+
+        with open(file, "r") as f:
+            urls = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+
+        results = []
+
         for url in urls:
             for strategy in STRATEGIES:
                 data = fetch_psi_data(url, strategy)
-                if "error" not in data:
-                    result = extract_data(url, strategy, data)
-                else:
-                    result = {
-                        "URL": url,
-                        "Strategy": strategy,
-                        "Performance": "",
-                        "LCP": "",
-                        "FID": "",
-                        "CLS": "",
-                        "INP": "",
-                        "Field LCP": "",
-                        "Field FID": "",
-                        "Field CLS": "",
-                        "Field INP": "",
-                        "CWV Status": "",
-                        "Status": f"Failed ({data['error']})"
-                    }
-                results.append(result)
-                time.sleep(1)  # to avoid rate limiting
+                results.append(data)
+                time.sleep(2)  # Avoid throttling
 
-    out_csv = os.path.join(OUTPUT_DIR, f"psi_results_{filename.replace('.txt','')}.csv")
-    with open(out_csv, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=FIELD_NAMES)
-        writer.writeheader()
-        writer.writerows(results)
+        if results:
+            output_file = f"psi_results_{file.replace('.txt', '')}.csv"
+            with open(output_file, "w", newline="") as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=results[0].keys())
+                writer.writeheader()
+                writer.writerows(results)
+            print(f"✅ Results saved to {output_file}")
+        else:
+            print(f"⚠️ No PSI data collected for {file}, no CSV generated.")
 
-if __name__ == '__main__':
-    for batch_file in URL_BATCHES:
-        run_batch_scan(batch_file)
+if __name__ == "__main__":
+    run_scan()
