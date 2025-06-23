@@ -19,8 +19,13 @@ jobs:
     - name: Install dependencies
       run: pip install requests
 
-    - name: Run PSI scan script
-      run: python3 psi-scan.py
+    - name: Run PSI scan script for urls_part_1
+      run: python3 psi-scan.py urls_part_1.txt
+      env:
+        PSI_API_KEY: ${{ secrets.PSI_API_KEY }}
+
+    - name: Run PSI scan script for urls_part_2
+      run: python3 psi-scan.py urls_part_2.txt
       env:
         PSI_API_KEY: ${{ secrets.PSI_API_KEY }}
 
@@ -28,6 +33,6 @@ jobs:
       run: |
         git config --global user.name "github-actions"
         git config --global user.email "actions@github.com"
-        git add psi_results_*.csv
-        git commit -m "Add all PSI result CSVs" || echo "No changes to commit"
+        git add psi_results_*.csv || echo "No result CSVs to add"
+        git commit -m "Add PSI results for all batches" || echo "No changes to commit"
         git push
